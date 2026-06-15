@@ -1,0 +1,170 @@
+"""
+Command-line entry point and top-level orchestration.
+
+``main(argv, env)``
+    The single entry point exposed by the ``vllmstat`` console script.
+
+    1. Parses CLI arguments and environment variables into a ``Config`` object.
+    2. Calls ``resolve_instances`` to fill ``cfg.instances`` from TOML config
+       files, Docker discovery, and ``--url`` flags.
+    3. Dispatches to one of three execution paths:
+       - ``--once --json``: single-poll snapshot printed as JSON, then exits.
+       - TUI mode: launches the interactive ``VllmStatApp`` dashboard.
+
+``resolve_instances(cfg, env)``
+    Mutates ``cfg.instances`` in-place by merging all instance sources:
+    TOML config file (searched via ``find_config``), ``--discover-docker``,
+    and CLI ``--url`` flags.  Also propagates TOML global keys (``interval``,
+    ``gpu``) into the config when the corresponding CLI flag is at its default.
+
+``run_once_json(cfg)``
+    For a single instance: fetches metrics twice (with a short sleep between
+    samples) to prime the EWMA rates, then dumps the resulting ``Snapshot``
+    as JSON.  Delegates to ``_run_once_fleet`` for multi-instance configs.
+
+``_run_once_fleet(cfg)``
+    Async variant that polls all instances concurrently and emits a JSON array
+    of per-instance snapshots.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+
+from vllmstat.config.config import Config, find_config, load_config
+from vllmstat.metrics.engine import MetricsEngine
+from vllmstat.metrics.kv import load_model_dims
+from vllmstat.metrics.parse import parse_metrics
+from vllmstat.metrics.state import snapshot_to_dict
+from vllmstat.providers.mock import MockProvider
+
+
+def resolve_instances(cfg: Config, env: dict[str, str]) -> Config:
+    from vllmstat.fleet.resolve import instance_from_dict, local_hostnames, resolve_fleet
+    from vllmstat.providers.docker import discover_docker
+
+    local_names = local_hostnames()
+    config_instances = []
+    config_globals: dict = {}
+    path = find_config(cfg.config_path, env)
+    if path:
+        try:
+            raw, config_globals = load_config(path)
+            config_instances = [
+                instance_from_dict(
+                    r,
+                    defaults_api_key=cfg.api_key,
+                    defaults_metrics_path=cfg.metrics_path,
+                    local_names=local_names,
+                )
+                for r in raw
+            ]
+        except (OSError, ValueError) as e:
+            print(f"vllmstat: ignoring config {path}: {e}", file=sys.stderr)
+    interval = config_globals.get("interval")
+    if isinstance(interval, bool):
+        interval = None
+    if cfg.interval == 1.0 and isinstance(interval, (int, float)):
+        cfg.interval = float(interval)
+    gpu = config_globals.get("gpu")
+    if cfg.gpu is True and isinstance(gpu, bool):
+        cfg.gpu = gpu
+    docker_instances = discover_docker() if cfg.discover_docker else []
+    cfg.instances = resolve_fleet(
+        config_instances,
+        docker_instances,
+        cfg.urls,
+        defaults_api_key=cfg.api_key,
+        defaults_metrics_path=cfg.metrics_path,
+        local_names=local_names,
+    )
+    return cfg
+
+
+def _run_once_fleet(cfg: Config) -> int:
+    import asyncio
+
+    from vllmstat.fleet.fleet import Fleet, InstanceRuntime
+    from vllmstat.metrics.state import GpuSnapshot
+
+    async def go():
+        if cfg.mock:
+            from vllmstat.providers.mock import MockVllmProvider
+
+            rts = [
+                InstanceRuntime(i, provider=MockVllmProvider(MockProvider())) for i in cfg.instances
+            ]
+        else:
+            rts = [InstanceRuntime(i) for i in cfg.instances]
+        fleet = Fleet([], runtimes=rts)
+        await fleet.poll(GpuSnapshot(), 0.0)
+        time.sleep(min(cfg.interval, 1.0))
+        fs = await fleet.poll(GpuSnapshot(), 1.0)
+        await fleet.aclose()
+        return fs
+
+    fs = asyncio.run(go())
+    out = [
+        {
+            "name": inst.name,
+            "url": inst.url,
+            "locality": inst.locality,
+            "snapshot": snapshot_to_dict(snap),
+        }
+        for inst, snap in fs.items
+    ]
+    print(json.dumps(out, default=str))
+    return 0
+
+
+def run_once_json(cfg: Config) -> int:
+    if len(cfg.instances) > 1:
+        return _run_once_fleet(cfg)
+    if cfg.mock:
+        eng = MetricsEngine(dims=None, max_model_len=None)
+        mp = MockProvider()
+        eng.derive(parse_metrics(mp.metrics_text()), now=0.0)
+        snap = eng.derive(parse_metrics(mp.metrics_text()), now=1.0)
+    else:
+        import asyncio
+
+        from vllmstat.providers.vllm import VllmProvider
+
+        async def _go():
+            inst = cfg.instances[0] if cfg.instances else None
+            url = inst.url if inst else cfg.url
+            metrics_path = inst.metrics_path if inst else cfg.metrics_path
+            api_key = inst.api_key if inst else cfg.api_key
+            p = VllmProvider(base_url=url, metrics_path=metrics_path, api_key=api_key)
+            info = await p.fetch_model_info()
+            r0 = await p.fetch_metrics()
+            time.sleep(min(cfg.interval, 1.0))
+            r1 = await p.fetch_metrics()
+            await p.aclose()
+            return info, r0, r1
+
+        info, r0, r1 = asyncio.run(_go())
+        if not r1.fetched_ok:
+            print(json.dumps({"error": r1.error}), file=sys.stderr)
+            return 1
+        md = load_model_dims(info.root, info.max_model_len)
+        eng = MetricsEngine(dims=md.dims, max_model_len=md.max_model_len)
+        eng.derive(parse_metrics(r0.text), now=0.0)
+        snap = eng.derive(parse_metrics(r1.text), now=1.0)
+    print(json.dumps(snapshot_to_dict(snap), default=str))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    env = dict(os.environ)
+    cfg = Config.from_sources(argv, env)
+    resolve_instances(cfg, env)
+    if cfg.once and cfg.json:
+        return run_once_json(cfg)
+    from vllmstat.ui.app import run_app
+
+    return run_app(cfg)
