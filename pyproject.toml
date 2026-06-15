@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cage-stats"
+version = "0.1.0"
+description = "nvtop for vLLM — an interactive terminal dashboard for vLLM serving performance and GPU/fleet monitoring (CAGE)"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["vllm", "llm", "tui", "monitoring", "nvtop", "gpu", "cage"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Monitoring",
+]
+dependencies = [
+  "textual>=0.60",
+  "httpx>=0.27",
+  "prometheus-client>=0.20",
+  "nvidia-ml-py>=12.535",
+  'tomli; python_version < "3.11"',
+]
+
+[project.optional-dependencies]
+proxy = ["aiohttp>=3.9"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "aiohttp>=3.9"]
+
+[project.scripts]
+cage-stats = "cage_stats.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/lucasmdocarmo/cage-stats"
+Issues = "https://github.com/lucasmdocarmo/cage-stats/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cage_stats"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]

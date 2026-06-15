@@ -1,0 +1,9 @@
+# Runtime dependencies for cage-stats (also declared in pyproject.toml).
+textual>=0.60
+httpx>=0.27
+prometheus-client>=0.20
+nvidia-ml-py>=12.535
+tomli; python_version < "3.11"
+
+# Optional: content-tee reverse proxy (install with: pip install 'cage-stats[proxy]')
+# aiohttp>=3.9
