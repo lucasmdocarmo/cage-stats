@@ -60,6 +60,17 @@ def fetch_snapshot(
     info, r0, r1 = asyncio.run(_go())
     if not r1.fetched_ok:
         raise RuntimeError(r1.error or "failed to fetch /metrics")
+    # Guard against a 200 response whose body carries NO vLLM metrics (wrong metrics_path, a
+    # proxy/error page, or a vLLM build that renamed the series). Without this, the engine's
+    # `sum_value(...) or 0.0` coalescing fabricates an all-zero snapshot that is
+    # indistinguishable from a real idle-zero measurement -- a silent data-integrity hole for
+    # any downstream consumer (e.g. CAGE telemetry). Fail loud so the caller records the run
+    # as "telemetry unavailable" (None) instead of recording fabricated zeros.
+    if "vllm:" not in (r1.text or ""):
+        raise RuntimeError(
+            f"/metrics at {url}{metrics_path} returned no vLLM metrics "
+            "(check metrics_path, or that this endpoint is a vLLM server)"
+        )
     md = load_model_dims(info.root, info.max_model_len)
     eng = MetricsEngine(dims=md.dims, max_model_len=md.max_model_len)
     eng.derive(parse_metrics(r0.text), now=0.0)
