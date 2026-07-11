@@ -118,8 +118,11 @@ class Snapshot:
     src_compute: float | None = None
     src_cache_hit: float | None = None
     src_external: float | None = None
-    cached_tokens_total: float = 0.0
-    recomputed_tokens_total: float = 0.0
+    # None (not 0.0) when vLLM does not expose the counter, so an ABSENT series is
+    # distinguishable from a genuine zero. The CAGE sampler's numeric filter drops None,
+    # preventing a fabricated 0.0 from entering vllm_telemetry.json / metrics.json.
+    cached_tokens_total: float | None = None
+    recomputed_tokens_total: float | None = None
     external_kv_active: bool = False
     kv_usage: float = 0.0
     kv_capacity_tokens: int | None = None

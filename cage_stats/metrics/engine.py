@@ -308,8 +308,11 @@ class MetricsEngine:
             src_compute=_frac("local_compute"),
             src_cache_hit=_frac("local_cache_hit"),
             src_external=_frac("external_kv_transfer"),
-            cached_tokens_total=sum_value(fam, "vllm:prompt_tokens_cached_total") or 0.0,
-            recomputed_tokens_total=sum_value(fam, "vllm:prompt_tokens_recomputed_total") or 0.0,
+            # No `or 0.0`: sum_value returns None for an absent counter, and None must be
+            # preserved so a missing series is not fabricated as a real zero (matches the
+            # spec_decode fields above). A genuine zero counter still reads as 0.0.
+            cached_tokens_total=sum_value(fam, "vllm:prompt_tokens_cached_total"),
+            recomputed_tokens_total=sum_value(fam, "vllm:prompt_tokens_recomputed_total"),
             external_kv_active=external_active,
             kv_usage=kv_usage,
             kv_capacity_tokens=kv.capacity_tokens,

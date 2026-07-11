@@ -155,6 +155,17 @@ def run_once_json(cfg: Config) -> int:
         if not r1.fetched_ok:
             print(json.dumps({"error": r1.error}), file=sys.stderr)
             return 1
+        # Fail closed on a 200 body that carries NO vLLM metrics (wrong metrics_path, a
+        # proxy/error page, or a non-vLLM endpoint). Mirrors api.fetch_snapshot's guard so
+        # this CLI JSON path (CAGE's `cage-stats --once --json` fallback) cannot emit an
+        # all-zero fabricated snapshot that a downstream consumer reads as real telemetry.
+        if "vllm:" not in (r1.text or ""):
+            print(
+                json.dumps({"error": "/metrics returned no vLLM metrics "
+                            "(check metrics_path or that this endpoint is a vLLM server)"}),
+                file=sys.stderr,
+            )
+            return 1
         md = load_model_dims(info.root, info.max_model_len)
         eng = MetricsEngine(dims=md.dims, max_model_len=md.max_model_len)
         eng.derive(parse_metrics(r0.text), now=0.0)
