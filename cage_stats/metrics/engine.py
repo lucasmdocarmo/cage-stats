@@ -244,8 +244,21 @@ class MetricsEngine:
         def _frac(k: str) -> float | None:
             return (src.get(k, 0.0) / src_total) if src_total > 0 else None
 
-        ext_q = sum_value(fam, "vllm:external_prefix_cache_queries_total") or 0.0
-        external_active = ext_q > 0 or (src.get("external_kv_transfer", 0.0) > 0)
+        # external_kv_active is OPTIONAL (CAGE audit 2026-07-16 SANITY-7): vLLM 0.11.0
+        # exposes NEITHER external-KV family, and the old `or 0.0` fabricated a False
+        # from the absent counters -- so "connector idle" was indistinguishable from
+        # "metric missing", which let the lmcache arm pass validation as "functioning".
+        # None = neither family present in the scrape (cannot know); True/False only
+        # when at least one family actually exists.
+        ext_q = sum_value(fam, "vllm:external_prefix_cache_queries_total")
+        has_by_source = bool(fam.get("vllm:prompt_tokens_by_source_total"))
+        external_active: bool | None
+        if ext_q is None and not has_by_source:
+            external_active = None
+        else:
+            external_active = (ext_q or 0.0) > 0 or (
+                src.get("external_kv_transfer", 0.0) > 0
+            )
 
         kv_usage = first_value(fam, "vllm:kv_cache_usage_perc") or 0.0
         kv = compute_kv(

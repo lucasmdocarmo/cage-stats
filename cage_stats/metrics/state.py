@@ -123,7 +123,10 @@ class Snapshot:
     # preventing a fabricated 0.0 from entering vllm_telemetry.json / metrics.json.
     cached_tokens_total: float | None = None
     recomputed_tokens_total: float | None = None
-    external_kv_active: bool = False
+    # None when NEITHER vLLM external-KV metric family is in the scrape (vLLM 0.11.0
+    # exposes none) -- a fabricated False here made "connector idle" indistinguishable
+    # from "metric missing" (CAGE audit 2026-07-16 SANITY-7).
+    external_kv_active: bool | None = None
     kv_usage: float = 0.0
     kv_capacity_tokens: int | None = None
     kv_used_tokens: int | None = None
