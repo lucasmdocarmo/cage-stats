@@ -166,6 +166,19 @@ def run_once_json(cfg: Config) -> int:
                 file=sys.stderr,
             )
             return 1
+        # Mirror the api-path guard for the PRIMING poll (r0): a bad first poll would
+        # zero-prime the rates and corrupt window deltas rather than fail loud.
+        if not r0.fetched_ok:
+            print(json.dumps({"error": r0.error or "failed first/priming /metrics poll"}),
+                  file=sys.stderr)
+            return 1
+        if "vllm:" not in (r0.text or ""):
+            print(
+                json.dumps({"error": "first /metrics poll returned no vLLM metrics "
+                            "(priming poll must be valid)"}),
+                file=sys.stderr,
+            )
+            return 1
         md = load_model_dims(info.root, info.max_model_len)
         eng = MetricsEngine(dims=md.dims, max_model_len=md.max_model_len)
         eng.derive(parse_metrics(r0.text), now=0.0)

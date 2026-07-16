@@ -42,6 +42,7 @@ class Rate:
         self.value = 0.0
         self._prev_value: float | None = None
         self._prev_t: float | None = None
+        self._primed = False
 
     def update(self, raw: float, t: float) -> float:
         if self._prev_value is None or self._prev_t is None:
@@ -54,7 +55,16 @@ class Rate:
             self._prev_value, self._prev_t = raw, t
             return self.value
         inst = (raw - self._prev_value) / dt
-        self.value = self.alpha * inst + (1 - self.alpha) * self.value
+        # PRIME with the first real delta instead of blending it against the fake 0
+        # seed: a 0-seeded EWMA under-reports by (1-alpha)^n, and the two-poll
+        # api/CLI snapshot path computes exactly ONE delta -- every gen_tps/
+        # prompt_tps/req_rate it ever reported was 0.3x the truth (verified in the
+        # 2026-07-15 run data: prompt_tps_peak 96.9 == 0.3 * 323 actual).
+        if not self._primed:
+            self.value = inst
+            self._primed = True
+        else:
+            self.value = self.alpha * inst + (1 - self.alpha) * self.value
         self._prev_value, self._prev_t = raw, t
         return self.value
 

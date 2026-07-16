@@ -71,6 +71,17 @@ def fetch_snapshot(
             f"/metrics at {url}{metrics_path} returned no vLLM metrics "
             "(check metrics_path, or that this endpoint is a vLLM server)"
         )
+    # r0 PRIMES every rate baseline and the session accounting: a failed/empty FIRST
+    # poll with a healthy second one would zero-prime the rates (turning them into
+    # fractions of lifetime totals) and make per-window deltas read as lifetime
+    # values. Fail exactly as loud as for r1.
+    if not r0.fetched_ok:
+        raise RuntimeError(r0.error or "failed to fetch /metrics (first/priming poll)")
+    if "vllm:" not in (r0.text or ""):
+        raise RuntimeError(
+            f"/metrics first poll at {url}{metrics_path} returned no vLLM metrics "
+            "(priming poll must be valid; rates would be computed against garbage)"
+        )
     md = load_model_dims(info.root, info.max_model_len)
     eng = MetricsEngine(dims=md.dims, max_model_len=md.max_model_len)
     eng.derive(parse_metrics(r0.text), now=0.0)
