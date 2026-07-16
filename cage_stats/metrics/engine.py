@@ -40,6 +40,8 @@ from cage_stats.metrics.parse import (
     Families,
     first_value,
     get_buckets,
+    hist_count,
+    hist_sum,
     info_labels,
     sum_value,
 )
@@ -51,6 +53,16 @@ _LAT = {
     "tpot": "vllm:request_time_per_output_token_seconds",
     "e2e": "vllm:e2e_request_latency_seconds",
     "queue": "vllm:request_queue_time_seconds",
+}
+
+# vLLM 0.11 per-phase request-time histograms, exposed as cumulative SUM/COUNT so
+# consumers can diff samples (CAGE memory-pressure sweep: prefill-time growth under
+# prefix-cache eviction is the mechanism readout). Field prefix -> histogram base name.
+_PHASE_HIST = {
+    "prefill_time": "vllm:request_prefill_time_seconds",
+    "decode_time": "vllm:request_decode_time_seconds",
+    "inference_time": "vllm:request_inference_time_seconds",
+    "queue_time": "vllm:request_queue_time_seconds",
 }
 
 
@@ -217,6 +229,16 @@ class MetricsEngine:
         preempt = self._preempt.update(
             sum_value(fam, "vllm:num_preemptions_total") or 0.0, now
         )
+        # Raw cumulative preemption counter alongside the EWMA rate: None when absent
+        # (matches cached_tokens_total -- a missing series must not fabricate a zero).
+        preemptions_total = sum_value(fam, "vllm:num_preemptions_total")
+
+        # Per-phase request-time histograms (vLLM 0.11): cumulative _sum/_count per
+        # series, summed across label sets; None when the histogram is absent.
+        phase: dict[str, float | None] = {}
+        for field_prefix, base in _PHASE_HIST.items():
+            phase[f"{field_prefix}_sum"] = hist_sum(fam, base)
+            phase[f"{field_prefix}_count"] = hist_count(fam, base)
 
         sess = self._session(running, gen_total, prompt_total, req_total, now)
 
@@ -327,6 +349,15 @@ class MetricsEngine:
             cached_tokens_total=sum_value(fam, "vllm:prompt_tokens_cached_total"),
             recomputed_tokens_total=sum_value(fam, "vllm:prompt_tokens_recomputed_total"),
             external_kv_active=external_active,
+            prefill_time_sum=phase["prefill_time_sum"],
+            prefill_time_count=phase["prefill_time_count"],
+            decode_time_sum=phase["decode_time_sum"],
+            decode_time_count=phase["decode_time_count"],
+            inference_time_sum=phase["inference_time_sum"],
+            inference_time_count=phase["inference_time_count"],
+            queue_time_sum=phase["queue_time_sum"],
+            queue_time_count=phase["queue_time_count"],
+            preemptions_total=preemptions_total,
             kv_usage=kv_usage,
             kv_capacity_tokens=kv.capacity_tokens,
             kv_used_tokens=kv.used_tokens,

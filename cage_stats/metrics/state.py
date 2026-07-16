@@ -127,6 +127,21 @@ class Snapshot:
     # exposes none) -- a fabricated False here made "connector idle" indistinguishable
     # from "metric missing" (CAGE audit 2026-07-16 SANITY-7).
     external_kv_active: bool | None = None
+    # vLLM 0.11 per-phase request-time histograms (cumulative SUM/COUNT per series,
+    # summed across label sets). Monotonic counters: downstream consumers (CAGE's
+    # memory-pressure sweep) diff first/last samples for per-trial phase-time deltas.
+    # None (not 0.0) when the series is absent, so "metric missing" never reads as zero.
+    prefill_time_sum: float | None = None
+    prefill_time_count: float | None = None
+    decode_time_sum: float | None = None
+    decode_time_count: float | None = None
+    inference_time_sum: float | None = None
+    inference_time_count: float | None = None
+    queue_time_sum: float | None = None
+    queue_time_count: float | None = None
+    # Raw cumulative vllm:num_preemptions_total (the EWMA preempt_rate above hides
+    # low-frequency eviction/preemption events; the raw counter makes deltas exact).
+    preemptions_total: float | None = None
     kv_usage: float = 0.0
     kv_capacity_tokens: int | None = None
     kv_used_tokens: int | None = None
