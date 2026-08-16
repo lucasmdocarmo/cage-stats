@@ -142,7 +142,10 @@ class Snapshot:
     # Raw cumulative vllm:num_preemptions_total (the EWMA preempt_rate above hides
     # low-frequency eviction/preemption events; the raw counter makes deltas exact).
     preemptions_total: float | None = None
-    kv_usage: float = 0.0
+    # None (not 0.0) when vllm:kv_cache_usage_perc is absent from the scrape: the CAGE
+    # memory-pressure regime gate reads this, and a fabricated 0.0 flips "occupancy
+    # unknown" into "unpressured". Renderers show "—" for None (fmt_pct handles it).
+    kv_usage: float | None = None
     kv_capacity_tokens: int | None = None
     kv_used_tokens: int | None = None
     kv_dtype: str | None = None

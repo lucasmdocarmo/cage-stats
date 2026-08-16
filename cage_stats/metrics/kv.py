@@ -86,7 +86,7 @@ def compute_kv(
     cache_dtype: str | None,
     num_gpu_blocks: int | None,
     block_size: int | None,
-    kv_usage: float,
+    kv_usage: float | None,
     kv_cache_memory_bytes: int | None,
     dims: dict[str, int] | None,
     max_model_len: int | None,
@@ -94,7 +94,13 @@ def compute_kv(
     capacity = None
     if num_gpu_blocks and block_size:
         capacity = num_gpu_blocks * block_size
-    used = round(capacity * kv_usage) if capacity is not None else None
+    # kv_usage is None when the occupancy gauge is absent from the scrape; without
+    # it used-token count is unknowable, so propagate None rather than fabricating 0.
+    used = (
+        round(capacity * kv_usage)
+        if (capacity is not None and kv_usage is not None)
+        else None
+    )
 
     bpt = None
     if dims and all(k in dims for k in ("layers", "kv_heads", "head_dim")):

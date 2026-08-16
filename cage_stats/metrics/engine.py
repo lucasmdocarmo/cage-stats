@@ -282,7 +282,10 @@ class MetricsEngine:
                 src.get("external_kv_transfer", 0.0) > 0
             )
 
-        kv_usage = first_value(fam, "vllm:kv_cache_usage_perc") or 0.0
+        # None when the occupancy gauge is absent (matches preemptions_total above):
+        # the old `or 0.0` fabricated an "unpressured" reading from missing telemetry,
+        # and could not represent a genuine 0.0 gauge distinctly anyway (0.0 is falsy).
+        kv_usage = first_value(fam, "vllm:kv_cache_usage_perc")
         kv = compute_kv(
             cache_dtype=labels.get("cache_dtype"),
             num_gpu_blocks=_int(labels.get("num_gpu_blocks")),
