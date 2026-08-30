@@ -35,21 +35,33 @@ def fetch_snapshot(
     api_key: str | None = None,
     interval: float = 1.0,
     mock: bool = False,
+    dialect: str = "vllm",
 ) -> Snapshot:
-    """Return a derived :class:`Snapshot` for one vLLM instance.
+    """Return a derived :class:`Snapshot` for one serving instance.
+
+    ``dialect`` selects the backend metric dialect: ``"vllm"`` (default,
+    byte-identical to the pre-dialect behavior) or ``"sglang"`` — scraped via
+    :class:`~cage_stats.providers.sglang.SGLangProvider` and translated by
+    :func:`~cage_stats.metrics.sglang_dialect.translate_sglang_families`
+    before the engine derives (CAGE gap G-P2, 2026-08-26).
 
     Raises ``RuntimeError`` if the server cannot be reached / scraped.
     """
+    if dialect not in ("vllm", "sglang"):
+        raise ValueError(f"unknown metrics dialect {dialect!r} (expected 'vllm' or 'sglang')")
     if mock:
         eng = MetricsEngine(dims=None, max_model_len=None)
         mp = MockProvider()
         eng.derive(parse_metrics(mp.metrics_text()), now=0.0)
         return eng.derive(parse_metrics(mp.metrics_text()), now=1.0)
 
+    from cage_stats.providers.sglang import SGLangProvider
     from cage_stats.providers.vllm import VllmProvider
 
+    provider_cls = SGLangProvider if dialect == "sglang" else VllmProvider
+
     async def _go():
-        p = VllmProvider(base_url=url, metrics_path=metrics_path, api_key=api_key)
+        p = provider_cls(base_url=url, metrics_path=metrics_path, api_key=api_key)
         info = await p.fetch_model_info()
         r0 = await p.fetch_metrics()
         time.sleep(min(interval, 1.0))
@@ -66,10 +78,11 @@ def fetch_snapshot(
     # indistinguishable from a real idle-zero measurement -- a silent data-integrity hole for
     # any downstream consumer (e.g. CAGE telemetry). Fail loud so the caller records the run
     # as "telemetry unavailable" (None) instead of recording fabricated zeros.
-    if "vllm:" not in (r1.text or ""):
+    prefix = f"{dialect}:"
+    if prefix not in (r1.text or ""):
         raise RuntimeError(
-            f"/metrics at {url}{metrics_path} returned no vLLM metrics "
-            "(check metrics_path, or that this endpoint is a vLLM server)"
+            f"/metrics at {url}{metrics_path} returned no {dialect} metrics "
+            f"(check metrics_path, or that this endpoint is a {dialect} server)"
         )
     # r0 PRIMES every rate baseline and the session accounting: a failed/empty FIRST
     # poll with a healthy second one would zero-prime the rates (turning them into
@@ -77,15 +90,22 @@ def fetch_snapshot(
     # values. Fail exactly as loud as for r1.
     if not r0.fetched_ok:
         raise RuntimeError(r0.error or "failed to fetch /metrics (first/priming poll)")
-    if "vllm:" not in (r0.text or ""):
+    if prefix not in (r0.text or ""):
         raise RuntimeError(
-            f"/metrics first poll at {url}{metrics_path} returned no vLLM metrics "
+            f"/metrics first poll at {url}{metrics_path} returned no {dialect} metrics "
             "(priming poll must be valid; rates would be computed against garbage)"
         )
     md = load_model_dims(info.root, info.max_model_len)
     eng = MetricsEngine(dims=md.dims, max_model_len=md.max_model_len)
-    eng.derive(parse_metrics(r0.text), now=0.0)
-    return eng.derive(parse_metrics(r1.text), now=1.0)
+    fam0 = parse_metrics(r0.text)
+    fam1 = parse_metrics(r1.text)
+    if dialect == "sglang":
+        from cage_stats.metrics.sglang_dialect import translate_sglang_families
+
+        fam0 = translate_sglang_families(fam0)
+        fam1 = translate_sglang_families(fam1)
+    eng.derive(fam0, now=0.0)
+    return eng.derive(fam1, now=1.0)
 
 
 def snapshot_dict(url: str = "http://localhost:8000", **kwargs) -> dict:
