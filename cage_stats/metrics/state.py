@@ -142,10 +142,23 @@ class Snapshot:
     # Raw cumulative vllm:num_preemptions_total (the EWMA preempt_rate above hides
     # low-frequency eviction/preemption events; the raw counter makes deltas exact).
     preemptions_total: float | None = None
+    # Raw cumulative vllm:prefix_cache_{queries,hits}_total alongside the derived
+    # hit ratios above (contrast #19, dedup before/after the wire, needs per-window
+    # DELTAS of the raw counters per instance -- unreconstructible from ratios).
+    # None (not 0.0) when the family is absent, so "metric missing" never reads
+    # as a genuine zero.
+    prefix_cache_queries_total: float | None = None
+    prefix_cache_hits_total: float | None = None
     # None (not 0.0) when vllm:kv_cache_usage_perc is absent from the scrape: the CAGE
     # memory-pressure regime gate reads this, and a fabricated 0.0 flips "occupancy
     # unknown" into "unpressured". Renderers show "—" for None (fmt_pct handles it).
     kv_usage: float | None = None
+    # True when vllm:kv_cache_usage_perc carried MORE THAN ONE label set (vLLM
+    # data-parallel): each engine's gauge is a fraction of a DIFFERENT KV pool, so
+    # kv_usage is refused (None) rather than averaged into a number with no physical
+    # meaning. False for a single-engine scrape or an absent gauge -- read together
+    # with kv_usage=None to tell "multi-engine refusal" apart from "gauge missing".
+    kv_usage_multi_engine: bool = False
     kv_capacity_tokens: int | None = None
     kv_used_tokens: int | None = None
     kv_dtype: str | None = None
@@ -180,5 +193,6 @@ def snapshot_to_dict(s: Snapshot) -> dict:
         "fp16_equiv_tokens": s.kv_fp16_equiv_tokens,
         "fp16_full_ctx_gb": s.kv_fp16_full_ctx_gb,
         "usage": s.kv_usage,
+        "usage_multi_engine": s.kv_usage_multi_engine,
     }
     return d

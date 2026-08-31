@@ -246,8 +246,15 @@ class MetricsEngine:
         it_cnt = sum_value(fam, "vllm:iteration_tokens_total_count")
         tokens_per_iter = (it_sum / it_cnt) if (it_sum and it_cnt) else None
 
-        q = sum_value(fam, "vllm:prefix_cache_queries_total") or 0.0
-        h = sum_value(fam, "vllm:prefix_cache_hits_total") or 0.0
+        # Raw cumulative counters kept alongside the derived ratios: contrast #19
+        # (dedup before/after the wire) diffs per-window deltas of the raw counters
+        # per instance, which the ratios cannot reconstruct. None when the family is
+        # absent (matches preemptions_total -- absence must never fabricate a zero);
+        # the `or 0.0` below feeds only the ratio math, which guards with q > 0.
+        prefix_queries_total = sum_value(fam, "vllm:prefix_cache_queries_total")
+        prefix_hits_total = sum_value(fam, "vllm:prefix_cache_hits_total")
+        q = prefix_queries_total or 0.0
+        h = prefix_hits_total or 0.0
         hit_life = (h / q) if q > 0 else None
         hit_win = None
         if self._prev is not None:
@@ -285,7 +292,15 @@ class MetricsEngine:
         # None when the occupancy gauge is absent (matches preemptions_total above):
         # the old `or 0.0` fabricated an "unpressured" reading from missing telemetry,
         # and could not represent a genuine 0.0 gauge distinctly anyway (0.0 is falsy).
-        kv_usage = first_value(fam, "vllm:kv_cache_usage_perc")
+        # More than one label set (vLLM data-parallel) is a REFUSAL, not an average:
+        # each engine's gauge is a fraction of a DIFFERENT KV pool, so a mean has no
+        # physical meaning, and first_value would silently drop every engine but the
+        # first while the token counters above sum across all of them. kv_usage goes
+        # None and the flag marks why, so "multi-engine" is distinguishable from
+        # "gauge missing" downstream.
+        kv_rows = fam.get("vllm:kv_cache_usage_perc", [])
+        kv_usage_multi_engine = len(kv_rows) > 1
+        kv_usage = None if kv_usage_multi_engine else first_value(fam, "vllm:kv_cache_usage_perc")
         kv = compute_kv(
             cache_dtype=labels.get("cache_dtype"),
             num_gpu_blocks=_int(labels.get("num_gpu_blocks")),
@@ -361,7 +376,10 @@ class MetricsEngine:
             queue_time_sum=phase["queue_time_sum"],
             queue_time_count=phase["queue_time_count"],
             preemptions_total=preemptions_total,
+            prefix_cache_queries_total=prefix_queries_total,
+            prefix_cache_hits_total=prefix_hits_total,
             kv_usage=kv_usage,
+            kv_usage_multi_engine=kv_usage_multi_engine,
             kv_capacity_tokens=kv.capacity_tokens,
             kv_used_tokens=kv.used_tokens,
             kv_dtype=kv.dtype,
