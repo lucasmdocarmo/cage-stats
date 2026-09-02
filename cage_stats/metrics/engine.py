@@ -33,6 +33,7 @@ KV-cache
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from cage_stats.metrics.kv import compute_kv
@@ -64,6 +65,44 @@ _PHASE_HIST = {
     "inference_time": "vllm:request_inference_time_seconds",
     "queue_time": "vllm:request_queue_time_seconds",
 }
+
+
+# Prospective KV-transfer capture (T4.5): contrasts #18 (distribution's transfer
+# price) and #19 (dedup over the wire) need REAL connector counters, but the exact
+# family names the pinned engine exposes are a live-only fact. So the engine
+# captures every family whose PARSED name matches the connector prefixes below —
+# verbatim, name included — and fabricates nothing: a name absent from the scrape
+# never appears in the capture. Case-sensitive prefix match; histogram siblings
+# (_bucket/_sum/_count) arrive as separate sample names and surface as separate
+# entries, untransformed.
+_TRANSFER_FAMILY_RE = re.compile(r"^vllm:(kv_transfer|nixl|kv_connector)")
+
+# Doc-recorded transfer-instrument names: docs/VLLM_COMPATIBILITY.md (CAGE repo)
+# §8.2 check 5 and §8.5 record vLLM's NIXL transfer metrics ("transfer
+# count/bytes/latency as the engine sees them") only by the BARE family prefix
+# ``nixl_`` — the doc's own presence check is ``curl /metrics | grep nixl_``
+# (§8.4, nixl-metrics PR required) — so the bare spelling is captured alongside
+# the ``vllm:``-prefixed regex above. No full family name is recorded anywhere
+# in §8.2/§8.5. [VERIFY-LIVE at Run-C-prime preflight]: pin the exact family
+# names the pinned (vLLM, NIXL wheel, UCX) triple exposes, per §8.4.
+_TRANSFER_DOC_PREFIXES: tuple[str, ...] = ("nixl_",)
+
+
+def _transfer_counters(fam: Families) -> dict[str, float] | None:
+    """KV-transfer connector families, summed across label sets, keyed verbatim.
+
+    None (never {}) when NO matching family exists in the scrape: "connector
+    metrics missing" must stay distinguishable from "connector present, zero
+    traffic" (E2b absence doctrine — the preemptions_total / raw prefix-counter
+    precedent). A genuine 0.0 counter survives as {name: 0.0}.
+    """
+    out: dict[str, float] = {}
+    for name in fam:
+        if _TRANSFER_FAMILY_RE.match(name) or name.startswith(_TRANSFER_DOC_PREFIXES):
+            v = sum_value(fam, name)
+            if v is not None:
+                out[name] = v
+    return out or None
 
 
 def _int(s: str | None) -> int | None:
@@ -253,6 +292,12 @@ class MetricsEngine:
         # the `or 0.0` below feeds only the ratio math, which guards with q > 0.
         prefix_queries_total = sum_value(fam, "vllm:prefix_cache_queries_total")
         prefix_hits_total = sum_value(fam, "vllm:prefix_cache_hits_total")
+
+        # Prospective KV-transfer capture (see _transfer_counters): None when the
+        # scrape carries no connector family at all — today the only transfer-data
+        # producer is a simulator, so a real scrape is EXPECTED to yield None until
+        # the P/D-disaggregated stack is live.
+        transfer_counters = _transfer_counters(fam)
         q = prefix_queries_total or 0.0
         h = prefix_hits_total or 0.0
         hit_life = (h / q) if q > 0 else None
@@ -378,6 +423,7 @@ class MetricsEngine:
             preemptions_total=preemptions_total,
             prefix_cache_queries_total=prefix_queries_total,
             prefix_cache_hits_total=prefix_hits_total,
+            transfer_counters=transfer_counters,
             kv_usage=kv_usage,
             kv_usage_multi_engine=kv_usage_multi_engine,
             kv_capacity_tokens=kv.capacity_tokens,

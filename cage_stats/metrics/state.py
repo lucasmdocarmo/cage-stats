@@ -149,6 +149,16 @@ class Snapshot:
     # as a genuine zero.
     prefix_cache_queries_total: float | None = None
     prefix_cache_hits_total: float | None = None
+    # Prospective KV-transfer connector counters (T4.5, contrasts #18/#19):
+    # {family_name: value summed across label sets} for every scraped family
+    # matching ^vllm:(kv_transfer|nixl|kv_connector) or the doc-recorded bare
+    # ``nixl_`` prefix (docs/VLLM_COMPATIBILITY.md §8.2/§8.4/§8.5 — exact names
+    # are [VERIFY-LIVE at Run-C-prime preflight]). Names are captured VERBATIM
+    # from the scrape, never invented. None (not {}) when NO matching family
+    # exists — "connector metrics absent" must never read as "connector idle"
+    # (E2b doctrine, matching preemptions_total / the raw prefix counters).
+    # Serialized by snapshot_to_dict via asdict, like the raw prefix counters.
+    transfer_counters: dict[str, float] | None = None
     # None (not 0.0) when vllm:kv_cache_usage_perc is absent from the scrape: the CAGE
     # memory-pressure regime gate reads this, and a fabricated 0.0 flips "occupancy
     # unknown" into "unpressured". Renderers show "—" for None (fmt_pct handles it).
