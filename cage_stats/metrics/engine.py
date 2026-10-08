@@ -233,6 +233,11 @@ class MetricsEngine:
         prompt0 = self._sess_prompt0 or 0.0
         gen_tokens = max(0.0, gen_total - gen0)
         prompt_tokens = max(0.0, prompt_total - prompt0)
+        # The request count starts at the first tick that carries the counter
+        # (review 2026-10-08 LOW 4: a baseline tick without it left the count
+        # at 0 for the whole session).
+        if self._sess_req0 is None and req_total is not None:
+            self._sess_req0 = req_total
         requests = (
             int(req_total - self._sess_req0)
             if req_total is not None and self._sess_req0 is not None

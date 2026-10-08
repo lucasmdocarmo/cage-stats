@@ -197,6 +197,37 @@ def test_api_derives_at_the_measured_instants(monkeypatch):
     assert snap.req_rate == pytest.approx(1.0 / (t1 - t0), rel=0.05)
 
 
+def test_api_refuses_a_backward_clock_step(monkeypatch):
+    # Review 2026-10-08 LOW 3: with wall-clock instants a backward step would
+    # give the rate trackers dt <= 0 and a fabricated 0.0 rate; refuse instead
+    # (the CAGE sampler turns the error into an absent sample).
+    import cage_stats.providers.vllm as vllm_provider
+
+    _FakeProvider.texts = [
+        _text(running=1.0, gen=100.0, prompt=50.0, req=1.0),
+        _text(running=1.0, gen=110.0, prompt=55.0, req=2.0),
+    ]
+    _FakeProvider.times = []
+    monkeypatch.setattr(vllm_provider, "VllmProvider", _FakeProvider)
+    # four reads of the clock: the fake provider's two fetches and the api's
+    # two instants; the api's second instant lies before its first
+    seq = [1000.0, 1000.0, 999.0, 999.0]
+    monkeypatch.setattr(api.time, "time", lambda: seq.pop(0) if len(seq) > 1 else seq[0])
+    with pytest.raises(RuntimeError, match="clock stepped backward"):
+        api.fetch_snapshot("http://x", interval=0.0)
+
+
+def test_session_requests_start_at_the_first_tick_that_carries_the_counter():
+    # Review 2026-10-08 LOW 4: a baseline tick without the request counter left
+    # the request baseline unset for the whole session (requests stayed 0).
+    eng = MetricsEngine()
+    eng.derive(parse_metrics(_text(running=1.0, gen=100.0, prompt=50.0)), now=0.0)
+    eng.derive(parse_metrics(_text(running=1.0, gen=150.0, prompt=70.0, req=10.0)), now=1.0)
+    snap = eng.derive(parse_metrics(_text(running=1.0, gen=200.0, prompt=90.0, req=14.0)), now=2.0)
+    assert snap.session_requests == 4
+    assert snap.avg_gen_tokens_per_req == pytest.approx(100.0 / 4)
+
+
 def test_mock_path_keeps_its_numbers():
     snap = api.fetch_snapshot(mock=True)
     for field in ("running", "waiting", "gen_tps", "prompt_tps", "req_rate"):

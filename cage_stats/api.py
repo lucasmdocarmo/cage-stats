@@ -75,6 +75,13 @@ def fetch_snapshot(
         return info, r0, r1, t0, t1
 
     info, r0, r1, t0, t1 = asyncio.run(_go())
+    if t1 <= t0:
+        # ADR-0148 Batch C review LOW 3: a backward wall-clock step between the
+        # polls would hand the rate trackers dt <= 0 and a fabricated 0.0 rate.
+        raise RuntimeError(
+            f"clock stepped backward between the two polls (t0={t0:.6f}, t1={t1:.6f}); "
+            "no rate can be derived from this pair"
+        )
     if not r1.fetched_ok:
         raise RuntimeError(r1.error or "failed to fetch /metrics")
     # Guard against a 200 response whose body carries NO vLLM metrics (wrong metrics_path, a
