@@ -153,6 +153,7 @@ class MetricsEngine:
         self._sess_req0: float | None = None
         self._sess_prev_gen: float | None = None
         self._sess_prev_prompt: float | None = None
+        self._last_sess = _SessionStats()
 
     def reset_session(self) -> None:
         self._sess_t_prev = None
@@ -165,15 +166,24 @@ class MetricsEngine:
         self._sess_req0 = None
         self._sess_prev_gen = None
         self._sess_prev_prompt = None
+        self._last_sess = _SessionStats()
 
     def _session(
         self,
-        running: float,
-        gen_total: float,
-        prompt_total: float,
-        req_total: float,
+        running: float | None,
+        gen_total: float | None,
+        prompt_total: float | None,
+        req_total: float | None,
         now: float,
     ) -> _SessionStats:
+        # ADR-0148 Batch C (CAGE, 2026-10-08): a tick without the token
+        # counters carries no information for the session accounting; it
+        # reports the last known stats (the zero defaults before the first
+        # counted tick) instead of advancing from a fabricated baseline. A tick
+        # whose running gauge is absent attributes its interval neither to
+        # active nor to idle time; the counter deltas are still consumed.
+        if gen_total is None or prompt_total is None:
+            return self._last_sess
         if self._sess_gen0 is None:
             self._sess_gen0 = gen_total
             self._sess_prompt0 = prompt_total
@@ -181,7 +191,8 @@ class MetricsEngine:
             self._sess_prev_gen = gen_total
             self._sess_prev_prompt = prompt_total
             self._sess_t_prev = now
-            return _SessionStats()
+            self._last_sess = _SessionStats()
+            return self._last_sess
 
         if gen_total < self._sess_gen0:
             self._sess_gen0 = gen_total
@@ -194,7 +205,8 @@ class MetricsEngine:
             self._sess_idle_s = 0.0
             self._sess_acc_gen = 0.0
             self._sess_acc_prompt = 0.0
-            return _SessionStats()
+            self._last_sess = _SessionStats()
+            return self._last_sess
 
         assert self._sess_t_prev is not None
         assert self._sess_prev_gen is not None
@@ -203,7 +215,9 @@ class MetricsEngine:
         if dt > 0:
             dgen = max(0.0, gen_total - self._sess_prev_gen)
             dprompt = max(0.0, prompt_total - self._sess_prev_prompt)
-            if running > 0:
+            if running is None:
+                pass
+            elif running > 0:
                 self._sess_active_s += dt
                 self._sess_acc_gen += dgen
                 self._sess_acc_prompt += dprompt
@@ -219,8 +233,12 @@ class MetricsEngine:
         prompt0 = self._sess_prompt0 or 0.0
         gen_tokens = max(0.0, gen_total - gen0)
         prompt_tokens = max(0.0, prompt_total - prompt0)
-        requests = int(req_total - self._sess_req0) if self._sess_req0 is not None else 0
-        return _SessionStats(
+        requests = (
+            int(req_total - self._sess_req0)
+            if req_total is not None and self._sess_req0 is not None
+            else self._last_sess.requests
+        )
+        stats = _SessionStats(
             active_s=active_s,
             idle_s=self._sess_idle_s,
             active_frac=(active_s / total_s) if total_s > 0 else None,
@@ -231,6 +249,8 @@ class MetricsEngine:
             prompt_tokens=prompt_tokens,
             avg_gen_tokens_per_req=(gen_tokens / requests) if requests > 0 else None,
         )
+        self._last_sess = stats
+        return stats
 
     def _quantiles(self, fam: Families, base: str) -> Quantiles:
         cur = get_buckets(fam, base)
@@ -257,20 +277,26 @@ class MetricsEngine:
         )
         engines = {lbl.get("engine") for lbl, _ in fam.get("vllm:num_requests_running", [])}
 
-        running = sum_value(fam, "vllm:num_requests_running") or 0.0
+        # ADR-0148 Batch C (CAGE, 2026-10-08): an absent family is None, never 0.0.
+        # The old `or 0.0` read a missing running gauge as an idle engine and fed
+        # the rate trackers a constant zero, so an absent counter produced a
+        # fabricated 0.0 rate on every tick (SGLang's unmapped request family
+        # read req_rate 0 for a whole window). A rate is derived only when its
+        # counter was scraped; a family that reads 0 still reads 0.0.
+        running = sum_value(fam, "vllm:num_requests_running")
 
-        gen_total = sum_value(fam, "vllm:generation_tokens_total") or 0.0
-        prompt_total = sum_value(fam, "vllm:prompt_tokens_total") or 0.0
-        req_total = sum_value(fam, "vllm:request_success_total") or 0.0
-        gen = self._gen.update(gen_total, now)
-        prompt = self._prompt.update(prompt_total, now)
-        req = self._req.update(req_total, now)
-        preempt = self._preempt.update(
-            sum_value(fam, "vllm:num_preemptions_total") or 0.0, now
-        )
+        gen_total = sum_value(fam, "vllm:generation_tokens_total")
+        prompt_total = sum_value(fam, "vllm:prompt_tokens_total")
+        req_total = sum_value(fam, "vllm:request_success_total")
+        gen = self._gen.update(gen_total, now) if gen_total is not None else None
+        prompt = self._prompt.update(prompt_total, now) if prompt_total is not None else None
+        req = self._req.update(req_total, now) if req_total is not None else None
         # Raw cumulative preemption counter alongside the EWMA rate: None when absent
         # (matches cached_tokens_total -- a missing series must not fabricate a zero).
         preemptions_total = sum_value(fam, "vllm:num_preemptions_total")
+        preempt = (
+            self._preempt.update(preemptions_total, now) if preemptions_total is not None else None
+        )
 
         # Per-phase request-time histograms (vLLM 0.11): cumulative _sum/_count per
         # series, summed across label sets; None when the histogram is absent.
@@ -386,7 +412,7 @@ class MetricsEngine:
             model_names=model_names or ([mn] if (mn := labels.get("model_name")) else []),
             engine_count=len([e for e in engines if e is not None]) or 1,
             running=running,
-            waiting=sum_value(fam, "vllm:num_requests_waiting") or 0.0,
+            waiting=sum_value(fam, "vllm:num_requests_waiting"),
             preempt_rate=preempt,
             gen_tps=gen,
             prompt_tps=prompt,

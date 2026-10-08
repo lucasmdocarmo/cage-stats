@@ -95,10 +95,11 @@ class InstanceRuntime:
         return snap
 
     def _push_history(self, s: Snapshot) -> None:
-        self.history.push("running", s.running)
-        self.history.push("waiting", s.waiting)
-        self.history.push("gen_tps", s.gen_tps)
-        self.history.push("prompt_tps", s.prompt_tps)
+        # ADR-0148 Batch C: a None field (family absent) is not a plot point.
+        for name, value in (("running", s.running), ("waiting", s.waiting),
+                            ("gen_tps", s.gen_tps), ("prompt_tps", s.prompt_tps)):
+            if value is not None:
+                self.history.push(name, value)
         if s.prefix_hit_window is not None:
             self.history.push("prefix_hit", s.prefix_hit_window)
 

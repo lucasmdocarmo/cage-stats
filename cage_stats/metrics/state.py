@@ -97,12 +97,16 @@ class Snapshot:
     model_names: list[str] = field(default_factory=list)
     engine_count: int = 0
     max_num_seqs: int | None = None
-    running: float = 0.0
-    waiting: float = 0.0
-    preempt_rate: float = 0.0
-    gen_tps: float = 0.0
-    prompt_tps: float = 0.0
-    req_rate: float = 0.0
+    # ADR-0148 Batch C (CAGE, 2026-10-08): None (not 0.0) when the family was
+    # absent from the scrape; a gauge or rate that reads 0 stays 0.0. The
+    # renderers print the absence glyph for None (render.concurrency and
+    # render.throughput); the CAGE sampler drops None before aggregating.
+    running: float | None = None
+    waiting: float | None = None
+    preempt_rate: float | None = None
+    gen_tps: float | None = None
+    prompt_tps: float | None = None
+    req_rate: float | None = None
     tokens_per_iter: float | None = None
     session_active_s: float = 0.0
     session_idle_s: float = 0.0

@@ -45,6 +45,9 @@ def fetch_snapshot(
     :func:`~cage_stats.metrics.sglang_dialect.translate_sglang_families`
     before the engine derives (CAGE gap G-P2, 2026-08-26).
 
+    The rates use the measured gap between the two polls and ``ts`` is the
+    second poll's epoch time (ADR-0148 Batch C).
+
     Raises ``RuntimeError`` if the server cannot be reached / scraped.
     """
     if dialect not in ("vllm", "sglang"):
@@ -64,12 +67,14 @@ def fetch_snapshot(
         p = provider_cls(base_url=url, metrics_path=metrics_path, api_key=api_key)
         info = await p.fetch_model_info()
         r0 = await p.fetch_metrics()
+        t0 = time.time()
         time.sleep(min(interval, 1.0))
         r1 = await p.fetch_metrics()
+        t1 = time.time()
         await p.aclose()
-        return info, r0, r1
+        return info, r0, r1, t0, t1
 
-    info, r0, r1 = asyncio.run(_go())
+    info, r0, r1, t0, t1 = asyncio.run(_go())
     if not r1.fetched_ok:
         raise RuntimeError(r1.error or "failed to fetch /metrics")
     # Guard against a 200 response whose body carries NO vLLM metrics (wrong metrics_path, a
@@ -104,8 +109,14 @@ def fetch_snapshot(
 
         fam0 = translate_sglang_families(fam0)
         fam1 = translate_sglang_families(fam1)
-    eng.derive(fam0, now=0.0)
-    return eng.derive(fam1, now=1.0)
+    # ADR-0148 Batch C (CAGE, 2026-10-08): the two polls are derived at their
+    # wall-clock instants, so every rate divides by the MEASURED gap (the sleep
+    # plus two fetch latencies) and Snapshot.ts is the second poll's epoch
+    # time. Before this the engine saw now=0.0 and now=1.0 whatever the gap,
+    # which overstated every rate by gap/1.0 and stamped ts=1.0 on every
+    # snapshot (the clock defect CAGE worked around as S0F-15).
+    eng.derive(fam0, now=t0)
+    return eng.derive(fam1, now=t1)
 
 
 def snapshot_dict(url: str = "http://localhost:8000", **kwargs) -> dict:

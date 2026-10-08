@@ -23,6 +23,10 @@ Semantics notes (the honest part):
   (fail-closed) instead of reading a fabricated 0. Whether the pinned SGLang
   build exposes such a counter is a [VERIFY-LIVE] fact for S0's engine-parity
   row.
+- ``sglang:num_requests_total`` maps to ``vllm:request_success_total`` so the
+  engine derives ``req_rate`` from a scraped counter (ADR-0148 Batch C); the
+  two counters' semantics (processed vs finished) is recorded as [A] and
+  VERIFY-LIVE in the map.
 - ``sglang:cache_hit_rate`` is a *rate gauge*; vLLM's prefix-cache fields are
   cumulative *query/hit counters*. Deriving counters from a rate would
   fabricate data, so it is deliberately NOT mapped; SGLang cache-hit evidence
@@ -49,6 +53,13 @@ SGLANG_TO_VLLM: dict[str, str] = {
     "sglang:num_queue_reqs": "vllm:num_requests_waiting",
     "sglang:prompt_tokens_total": "vllm:prompt_tokens_total",
     "sglang:generation_tokens_total": "vllm:generation_tokens_total",
+    # ADR-0148 Batch C (CAGE, 2026-10-08): the request counter, so req_rate has
+    # a producer under SGLang (without it the engine derived a rate from an
+    # absent family). [A] SGLang documents num_requests_total as "requests
+    # processed"; vLLM's request_success_total counts finished requests. The
+    # equivalence is VERIFY-LIVE at the next S0 rehearsal: the 2026-10-07
+    # landing probed no request family.
+    "sglang:num_requests_total": "vllm:request_success_total",
 }
 
 #: Scarcity-counter names seen across SGLang builds, in preference order.

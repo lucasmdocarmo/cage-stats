@@ -61,6 +61,13 @@ def _plot_width(width: int | None) -> int:
     return max(_MIN_PLOT_WIDTH, int(width) - 2)
 
 
+def _n(value: float | None, spec: str) -> str:
+    """``value`` under ``spec``, or the dashboard's absence glyph (the one
+    ``fmt_si`` prints) when the engine recorded None for an absent family
+    (ADR-0148 Batch C)."""
+    return fmt_si(None) if value is None else format(value, spec)
+
+
 def header(s: Snapshot, *, url: str, interval: float, uptime: str) -> str:
     state = "● connected" if s.connected else "● down"
     models = ",".join(s.model_names) or "—"
@@ -79,8 +86,8 @@ def concurrency(s: Snapshot, h: History, *, width: int | None = None) -> str:
     seqs = f"  max-seqs {s.max_num_seqs}" if s.max_num_seqs else ""
     return (
         f"CONCURRENCY\n"
-        f" running {s.running:.0f} · waiting {s.waiting:.0f} · "
-        f"preempt {s.preempt_rate:.1f}/s{seqs}\n"
+        f" running {_n(s.running, '.0f')} · waiting {_n(s.waiting, '.0f')} · "
+        f"preempt {_n(s.preempt_rate, '.1f')}/s{seqs}\n"
         f"{_series_plot(h, 'running', width=pw, caption='running')}\n"
         f"{_series_plot(h, 'waiting', width=pw, caption='waiting')}"
     )
@@ -91,8 +98,8 @@ def throughput(s: Snapshot, h: History, *, width: int | None = None) -> str:
     tpi = f"{s.tokens_per_iter:.0f}" if s.tokens_per_iter else "—"
     return (
         f"THROUGHPUT\n"
-        f" gen {s.gen_tps:.0f} tok/s · prompt {s.prompt_tps:.0f} tok/s · "
-        f"tok/iter {tpi} · {s.req_rate:.1f} req/s\n"
+        f" gen {_n(s.gen_tps, '.0f')} tok/s · prompt {_n(s.prompt_tps, '.0f')} tok/s · "
+        f"tok/iter {tpi} · {_n(s.req_rate, '.1f')} req/s\n"
         f"{_series_plot(h, 'gen_tps', width=pw, caption='gen tok/s')}\n"
         f"{_series_plot(h, 'prompt_tps', width=pw, caption='prompt tok/s')}"
     )
@@ -188,7 +195,7 @@ def fleet_overview(
     for i, (inst, s) in enumerate(fleet.items):
         cur = "▸" if i == selected else " "
         st = "●" if s.connected else "✗"
-        rw = f"{s.running:.0f}/{s.waiting:.0f}" if s.connected else "—"
+        rw = f"{_n(s.running, '.0f')}/{_n(s.waiting, '.0f')}" if s.connected else fmt_si(None)
         gen = fmt_si(s.gen_tps) if s.connected else "—"
         kv = fmt_pct(s.kv_usage) if s.connected else "—"
         p50 = fmt_dur(s.ttft.p50) if (s.connected and s.ttft.p50 is not None) else "—"

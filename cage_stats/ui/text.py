@@ -24,10 +24,11 @@ def render_dashboard(snap: Snapshot, *, url: str = "", interval: float = 1.0, up
     """
     h = History()
     # Seed one data point so the mini-plots render a value rather than blank.
-    h.push("running", snap.running)
-    h.push("waiting", snap.waiting)
-    h.push("gen_tps", snap.gen_tps)
-    h.push("prompt_tps", snap.prompt_tps)
+    # ADR-0148 Batch C: a None field (family absent) is not a plot point.
+    for name, value in (("running", snap.running), ("waiting", snap.waiting),
+                        ("gen_tps", snap.gen_tps), ("prompt_tps", snap.prompt_tps)):
+        if value is not None:
+            h.push(name, value)
     if snap.prefix_hit_window is not None:
         h.push("prefix_hit", snap.prefix_hit_window)
 
