@@ -43,6 +43,12 @@ Families = dict[str, list[tuple[dict[str, str], float]]]
 def parse_metrics(text: str) -> Families:
     families: Families = {}
     for family in text_string_to_metric_families(text):
+        if family.type == "counter" and not family.samples:
+            # CAGE A7 (2026-10-21): a labeled counter is declared (HELP and TYPE)
+            # before its first increment but has no sample yet; it is kept as an
+            # EMPTY list under its sample name so a consumer can tell "declared,
+            # counted nothing" from "absent". sum_value/first_value stay None.
+            families.setdefault(f"{family.name}_total", [])
         for sample in family.samples:
             families.setdefault(sample.name, []).append((dict(sample.labels), sample.value))
     return families

@@ -65,9 +65,15 @@ SGLANG_TO_VLLM: dict[str, str] = {
 #: Scarcity-counter names seen across SGLang builds, in preference order.
 #: The FIRST present one maps to ``vllm:num_preemptions_total``; when none is
 #: present no preemption family is emitted at all (absence must stay absence).
+#: CAGE A7 (owner 2026-10-20): the pinned SGLang 0.5.10.post1 exports a
+#: CUMULATIVE counter, sglang:num_retracted_requests_total, and a last-batch
+#: GAUGE, sglang:num_retracted_reqs. Only counters map onto the preemption
+#: counter (the regime record takes its change over the window); the gauge is
+#: no candidate and passes through under its own name as a diagnostic.
 RETRACTION_CANDIDATES: tuple[str, ...] = (
+    "sglang:num_retracted_requests_total",
+    "sglang:num_retracted_requests",
     "sglang:num_retracted_reqs_total",
-    "sglang:num_retracted_reqs",
     "sglang:retracted_reqs_total",
     "sglang:num_preempted_reqs",
 )
@@ -105,6 +111,13 @@ def translate_sglang_families(families: Families) -> Families:
     for name, samples in families.items():
         if name == retraction_source:
             target = _PREEMPT_TARGET
+            if not samples:
+                # CAGE A7 (2026-10-21): declared, no sample = no retraction since
+                # the server started. SGLang 0.5.10.post1 creates the labeled
+                # child only when it retracts (scheduler.py 2574: increment only
+                # when len(retracted_reqs) > 0), so the count is 0, not unknown.
+                # An undeclared counter stays absent (fail-closed above).
+                samples = [({}, 0.0)]
         else:
             target = SGLANG_TO_VLLM.get(name, name)
         out.setdefault(target, []).extend(samples)

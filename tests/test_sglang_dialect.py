@@ -163,3 +163,38 @@ def test_fetch_snapshot_rejects_unknown_dialect_before_any_io() -> None:
 def test_fetch_snapshot_default_dialect_mock_path_unchanged() -> None:
     snap = fetch_snapshot(mock=True)  # pre-dialect behavior must be intact
     assert snap is not None
+
+
+def test_the_cumulative_retraction_counter_maps_and_the_gauge_stays_a_diagnostic_a7():
+    """CAGE A7 (2026-10-20): SGLang 0.5.10.post1 exports the cumulative counter
+    sglang:num_retracted_requests_total and the last-batch gauge
+    sglang:num_retracted_reqs; only the counter maps onto the preemption counter."""
+    from cage_stats.metrics.sglang_dialect import translate_sglang_families
+
+    both = {"sglang:num_retracted_requests_total": ["counter"], "sglang:num_retracted_reqs": ["gauge"]}
+    out = translate_sglang_families(both)
+    assert out["vllm:num_preemptions_total"] == ["counter"]
+    assert out["sglang:num_retracted_reqs"] == ["gauge"]  # kept, under its own name
+    gauge_only = translate_sglang_families({"sglang:num_retracted_reqs": ["gauge"]})
+    assert "vllm:num_preemptions_total" not in gauge_only  # absence stays absence
+
+
+def test_a_declared_retraction_counter_with_no_sample_reads_zero_not_absent_a7() -> None:
+    """CAGE A7 (2026-10-21): SGLang 0.5.10.post1 declares the labeled counter at
+    start but prints no sample until its first retraction (scheduler.py 2574
+    increments only when len(retracted_reqs) > 0); a fresh server must read 0,
+    a build without the counter must stay absent (the regime labeler refuses)."""
+    from cage_stats.metrics.parse import sum_value
+
+    head = (
+        '# HELP sglang:num_retracted_reqs g\n# TYPE sglang:num_retracted_reqs gauge\n'
+        'sglang:num_retracted_reqs{model_name="m"} 0.0\n'
+    )
+    declared = head + '# HELP sglang:num_retracted_requests_total c\n# TYPE sglang:num_retracted_requests_total counter\n'
+    counted = declared + 'sglang:num_retracted_requests_total{model_name="m"} 2.0\n'
+    parsed = parse_metrics(declared)
+    assert parsed["sglang:num_retracted_requests_total"] == []
+    assert sum_value(parsed, "sglang:num_retracted_requests_total") is None  # other consumers unchanged
+    assert sum_value(translate_sglang_families(parsed), "vllm:num_preemptions_total") == 0.0
+    assert sum_value(translate_sglang_families(parse_metrics(counted)), "vllm:num_preemptions_total") == 2.0
+    assert "vllm:num_preemptions_total" not in translate_sglang_families(parse_metrics(head))
