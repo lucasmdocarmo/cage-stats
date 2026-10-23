@@ -19,10 +19,18 @@ Semantics notes (the honest part):
   documented set does not. We therefore map the first present name among
   :data:`RETRACTION_CANDIDATES` onto ``vllm:num_preemptions_total`` and map
   NOTHING when none is present — the engine then reports
-  ``preemptions_total=None`` and CAGE's regime labeler REFUSES the window
-  (fail-closed) instead of reading a fabricated 0. Whether the pinned SGLang
+  ``preemptions_total=None``, which CAGE records as absent scarcity (it never
+  gates the regime label since CAGE C11, 2026-10-10), never a fabricated 0. Whether the pinned SGLang
   build exposes such a counter is a [VERIFY-LIVE] fact for S0's engine-parity
   row.
+  CAGE S1 (2026-10-23, live): the pinned 0.5.10.post1 build runs its metrics in
+  prometheus_client multiprocess mode and creates the labeled counter only at
+  its first retraction, so a server that has not retracted shows the
+  ``sglang:num_retracted_reqs`` gauge and no counter at all. That gauge is the
+  witness that the metrics collector is up; with it present and no counter,
+  the count is 0 (see :func:`translate_sglang_families`). Limitation: a build
+  with the gauge but no counter would also read 0; CAGE installs the exact
+  0.5.10.post1 build, which defines the counter.
 - ``sglang:num_requests_total`` maps to ``vllm:request_success_total`` so the
   engine derives ``req_rate`` from a scraped counter (ADR-0148 Batch C); the
   two counters' semantics (processed vs finished) is recorded as [A] and
@@ -64,7 +72,8 @@ SGLANG_TO_VLLM: dict[str, str] = {
 
 #: Scarcity-counter names seen across SGLang builds, in preference order.
 #: The FIRST present one maps to ``vllm:num_preemptions_total``; when none is
-#: present no preemption family is emitted at all (absence must stay absence).
+#: present no preemption family is emitted (absence stays absence), unless the
+#: lazy-counter witness gauge below is sampled, which reads 0 (CAGE S1 2026-10-23).
 #: CAGE A7 (owner 2026-10-20): the pinned SGLang 0.5.10.post1 exports a
 #: CUMULATIVE counter, sglang:num_retracted_requests_total, and a last-batch
 #: GAUGE, sglang:num_retracted_reqs. Only counters map onto the preemption
@@ -79,6 +88,11 @@ RETRACTION_CANDIDATES: tuple[str, ...] = (
 )
 
 _PREEMPT_TARGET = "vllm:num_preemptions_total"
+
+#: CAGE S1 (2026-10-23): the last-batch retraction gauge the pinned build
+#: exports from server start. Present with no retraction counter, it means no
+#: retraction since the server started (the counter is created lazily).
+_LAZY_COUNTER_WITNESS = "sglang:num_retracted_reqs"
 
 
 def _find_retraction_source(families: Families) -> str | None:
@@ -121,4 +135,11 @@ def translate_sglang_families(families: Families) -> Families:
         else:
             target = SGLANG_TO_VLLM.get(name, name)
         out.setdefault(target, []).extend(samples)
+    if retraction_source is None and families.get(_LAZY_COUNTER_WITNESS):
+        # CAGE S1 (2026-10-23, live): SGLang 0.5.10.post1 creates the counter's
+        # labeled child, and with it the whole family in multiprocess mode, only
+        # at its first retraction (scheduler.py 2574-2575, the one increment
+        # site). The gauge sampled with no counter therefore means 0 so far.
+        # Neither present stays absent.
+        out.setdefault(_PREEMPT_TARGET, []).append(({}, 0.0))
     return out

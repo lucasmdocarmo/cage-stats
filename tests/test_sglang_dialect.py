@@ -175,8 +175,11 @@ def test_the_cumulative_retraction_counter_maps_and_the_gauge_stays_a_diagnostic
     out = translate_sglang_families(both)
     assert out["vllm:num_preemptions_total"] == ["counter"]
     assert out["sglang:num_retracted_reqs"] == ["gauge"]  # kept, under its own name
-    gauge_only = translate_sglang_families({"sglang:num_retracted_reqs": ["gauge"]})
-    assert "vllm:num_preemptions_total" not in gauge_only  # absence stays absence
+    # CAGE S1 (2026-10-23, live): the counter is created only at the first
+    # retraction, so the gauge alone now means 0 so far (it was "absent" under
+    # A7, whose declared-at-start premise the live pod falsified).
+    gauge_only = translate_sglang_families({"sglang:num_retracted_reqs": [({}, 0.0)]})
+    assert gauge_only["vllm:num_preemptions_total"] == [({}, 0.0)]
 
 
 def test_a_declared_retraction_counter_with_no_sample_reads_zero_not_absent_a7() -> None:
@@ -197,4 +200,33 @@ def test_a_declared_retraction_counter_with_no_sample_reads_zero_not_absent_a7()
     assert sum_value(parsed, "sglang:num_retracted_requests_total") is None  # other consumers unchanged
     assert sum_value(translate_sglang_families(parsed), "vllm:num_preemptions_total") == 0.0
     assert sum_value(translate_sglang_families(parse_metrics(counted)), "vllm:num_preemptions_total") == 2.0
-    assert "vllm:num_preemptions_total" not in translate_sglang_families(parse_metrics(head))
+    # CAGE S1 (2026-10-23): the gauge alone (the live shape before any
+    # retraction) reads 0, no longer absent
+    assert sum_value(translate_sglang_families(parse_metrics(head)), "vllm:num_preemptions_total") == 0.0
+
+
+def test_the_lazy_counter_rule_reads_zero_only_with_the_gauge_s1_2026_10_23() -> None:
+    """CAGE S1 (2026-10-23, live pod auvux7khv3h45k): SGLang 0.5.10.post1 runs
+    prometheus_client in multiprocess mode and creates the retraction counter at
+    its first retraction, so a fresh server shows the gauge and no counter."""
+    from cage_stats.metrics.parse import sum_value
+
+    gauge = 'sglang:num_retracted_reqs{model_name="m"} 0.0\n'
+    counter = 'sglang:num_retracted_requests_total{model_name="m"} 3.0\n'
+    gauge_head = "# HELP sglang:num_retracted_reqs g\n# TYPE sglang:num_retracted_reqs gauge\n"
+    counter_head = "# HELP sglang:num_retracted_requests_total c\n# TYPE sglang:num_retracted_requests_total counter\n"
+    fresh = parse_metrics(_sglang_text() + gauge_head + gauge)
+    assert sum_value(translate_sglang_families(fresh), "vllm:num_preemptions_total") == 0.0
+    # after the first retraction the counter wins and its value passes unchanged
+    retracted = parse_metrics(_sglang_text() + gauge_head + gauge + counter_head + counter)
+    out = translate_sglang_families(retracted)
+    assert sum_value(out, "vllm:num_preemptions_total") == 3.0
+    assert len(out["vllm:num_preemptions_total"]) == 1  # no extra zero beside the counter
+    # neither the gauge nor the counter: absence stays absence
+    assert "vllm:num_preemptions_total" not in translate_sglang_families(parse_metrics(_sglang_text()))
+    # a gauge declared with no sample is no witness
+    assert "vllm:num_preemptions_total" not in translate_sglang_families(parse_metrics(_sglang_text() + gauge_head))
+    # the input is never mutated
+    snapshot = {k: list(v) for k, v in fresh.items()}
+    translate_sglang_families(fresh)
+    assert fresh == snapshot
